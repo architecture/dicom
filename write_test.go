@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/suyashkumar/dicom/pkg/frame"
+
 	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/google/go-cmp/cmp"
@@ -16,6 +18,13 @@ import (
 	"github.com/suyashkumar/dicom/pkg/uid"
 )
 
+// TestWrite tests the write package by ensuring that it is consistent with the
+// Parse implementation. In particular, it is tested by writing out known
+// collections of Element and reading them back in using the Parse API and
+// ensuing the read in collection is equal to the initial collection.
+//
+// This also serves to test that the Parse implementation is consistent with the
+// Write implementation (e.g. it kinda goes both ways and covers Parse too).
 func TestWrite(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -34,6 +43,7 @@ func TestWrite(t *testing.T) {
 				mustNewElement(tag.PatientName, []string{"Bob", "Jones"}),
 				mustNewElement(tag.Rows, []int{128}),
 				mustNewElement(tag.FloatingPointValue, []float64{128.10}),
+				mustNewElement(tag.DimensionIndexPointer, []int{32, 36950}),
 			}},
 			expectedError: nil,
 		},
@@ -148,6 +158,175 @@ func TestWrite(t *testing.T) {
 			expectedError: nil,
 			opts:          []WriteOption{DefaultMissingTransferSyntax()},
 		},
+		{
+			name: "native PixelData: 8bit",
+			dataset: Dataset{Elements: []*Element{
+				mustNewElement(tag.MediaStorageSOPClassUID, []string{"1.2.840.10008.5.1.4.1.1.1.2"}),
+				mustNewElement(tag.MediaStorageSOPInstanceUID, []string{"1.2.3.4.5.6.7"}),
+				mustNewElement(tag.TransferSyntaxUID, []string{uid.ImplicitVRLittleEndian}),
+				mustNewElement(tag.Rows, []int{2}),
+				mustNewElement(tag.Columns, []int{2}),
+				mustNewElement(tag.BitsAllocated, []int{8}),
+				mustNewElement(tag.NumberOfFrames, []string{"1"}),
+				mustNewElement(tag.SamplesPerPixel, []int{1}),
+				mustNewElement(tag.PixelData, PixelDataInfo{
+					IsEncapsulated: false,
+					Frames: []frame.Frame{
+						{
+							Encapsulated: false,
+							NativeData: frame.NativeFrame{
+								BitsPerSample: 8,
+								Rows:          2,
+								Cols:          2,
+								Data:          [][]int{{1}, {2}, {3}, {4}},
+							},
+						},
+					},
+				}),
+				mustNewElement(tag.FloatingPointValue, []float64{128.10}),
+				mustNewElement(tag.DimensionIndexPointer, []int{32, 36950}),
+			}},
+			expectedError: nil,
+		},
+		{
+			name: "native PixelData: 16bit",
+			dataset: Dataset{Elements: []*Element{
+				mustNewElement(tag.MediaStorageSOPClassUID, []string{"1.2.840.10008.5.1.4.1.1.1.2"}),
+				mustNewElement(tag.MediaStorageSOPInstanceUID, []string{"1.2.3.4.5.6.7"}),
+				mustNewElement(tag.TransferSyntaxUID, []string{uid.ImplicitVRLittleEndian}),
+				mustNewElement(tag.Rows, []int{2}),
+				mustNewElement(tag.Columns, []int{2}),
+				mustNewElement(tag.BitsAllocated, []int{16}),
+				mustNewElement(tag.NumberOfFrames, []string{"1"}),
+				mustNewElement(tag.SamplesPerPixel, []int{1}),
+				mustNewElement(tag.PixelData, PixelDataInfo{
+					IsEncapsulated: false,
+					Frames: []frame.Frame{
+						{
+							Encapsulated: false,
+							NativeData: frame.NativeFrame{
+								BitsPerSample: 16,
+								Rows:          2,
+								Cols:          2,
+								Data:          [][]int{{1}, {2}, {3}, {4}},
+							},
+						},
+					},
+				}),
+			}},
+			expectedError: nil,
+		},
+		{
+			name: "native PixelData: 32bit",
+			dataset: Dataset{Elements: []*Element{
+				mustNewElement(tag.MediaStorageSOPClassUID, []string{"1.2.840.10008.5.1.4.1.1.1.2"}),
+				mustNewElement(tag.MediaStorageSOPInstanceUID, []string{"1.2.3.4.5.6.7"}),
+				mustNewElement(tag.TransferSyntaxUID, []string{uid.ImplicitVRLittleEndian}),
+				mustNewElement(tag.Rows, []int{2}),
+				mustNewElement(tag.Columns, []int{2}),
+				mustNewElement(tag.BitsAllocated, []int{32}),
+				mustNewElement(tag.NumberOfFrames, []string{"1"}),
+				mustNewElement(tag.SamplesPerPixel, []int{1}),
+				mustNewElement(tag.PixelData, PixelDataInfo{
+					IsEncapsulated: false,
+					Frames: []frame.Frame{
+						{
+							Encapsulated: false,
+							NativeData: frame.NativeFrame{
+								BitsPerSample: 32,
+								Rows:          2,
+								Cols:          2,
+								Data:          [][]int{{1}, {2}, {3}, {4}},
+							},
+						},
+					},
+				}),
+			}},
+			expectedError: nil,
+		},
+		{
+			name: "native PixelData: 2 SamplesPerPixel, 2 frames",
+			dataset: Dataset{Elements: []*Element{
+				mustNewElement(tag.MediaStorageSOPClassUID, []string{"1.2.840.10008.5.1.4.1.1.1.2"}),
+				mustNewElement(tag.MediaStorageSOPInstanceUID, []string{"1.2.3.4.5.6.7"}),
+				mustNewElement(tag.TransferSyntaxUID, []string{uid.ImplicitVRLittleEndian}),
+				mustNewElement(tag.Rows, []int{2}),
+				mustNewElement(tag.Columns, []int{2}),
+				mustNewElement(tag.BitsAllocated, []int{32}),
+				mustNewElement(tag.NumberOfFrames, []string{"2"}),
+				mustNewElement(tag.SamplesPerPixel, []int{2}),
+				mustNewElement(tag.PixelData, PixelDataInfo{
+					IsEncapsulated: false,
+					Frames: []frame.Frame{
+						{
+							Encapsulated: false,
+							NativeData: frame.NativeFrame{
+								BitsPerSample: 32,
+								Rows:          2,
+								Cols:          2,
+								Data:          [][]int{{1, 1}, {2, 2}, {3, 3}, {4, 4}},
+							},
+						},
+						{
+							Encapsulated: false,
+							NativeData: frame.NativeFrame{
+								BitsPerSample: 32,
+								Rows:          2,
+								Cols:          2,
+								Data:          [][]int{{5, 1}, {2, 2}, {3, 3}, {4, 5}},
+							},
+						},
+					},
+				}),
+			}},
+			expectedError: nil,
+		},
+		{
+			name: "encapsulated PixelData",
+			dataset: Dataset{Elements: []*Element{
+				mustNewElement(tag.MediaStorageSOPClassUID, []string{"1.2.840.10008.5.1.4.1.1.1.2"}),
+				mustNewElement(tag.MediaStorageSOPInstanceUID, []string{"1.2.3.4.5.6.7"}),
+				mustNewElement(tag.TransferSyntaxUID, []string{uid.ImplicitVRLittleEndian}),
+				mustNewElement(tag.BitsAllocated, []int{8}),
+				setUndefinedLength(mustNewElement(tag.PixelData, PixelDataInfo{
+					IsEncapsulated: true,
+					Frames: []frame.Frame{
+						{
+							Encapsulated:     true,
+							EncapsulatedData: frame.EncapsulatedFrame{Data: []byte{1, 2, 3, 4}},
+						},
+					},
+				})),
+				mustNewElement(tag.FloatingPointValue, []float64{128.10}),
+				mustNewElement(tag.DimensionIndexPointer, []int{32, 36950}),
+			}},
+			expectedError: nil,
+		},
+		{
+			name: "encapsulated PixelData: multiframe",
+			dataset: Dataset{Elements: []*Element{
+				mustNewElement(tag.MediaStorageSOPClassUID, []string{"1.2.840.10008.5.1.4.1.1.1.2"}),
+				mustNewElement(tag.MediaStorageSOPInstanceUID, []string{"1.2.3.4.5.6.7"}),
+				mustNewElement(tag.TransferSyntaxUID, []string{uid.ImplicitVRLittleEndian}),
+				mustNewElement(tag.BitsAllocated, []int{8}),
+				setUndefinedLength(mustNewElement(tag.PixelData, PixelDataInfo{
+					IsEncapsulated: true,
+					Frames: []frame.Frame{
+						{
+							Encapsulated:     true,
+							EncapsulatedData: frame.EncapsulatedFrame{Data: []byte{1, 2, 3, 4}},
+						},
+						{
+							Encapsulated:     true,
+							EncapsulatedData: frame.EncapsulatedFrame{Data: []byte{1, 2, 3, 8}},
+						},
+					},
+				})),
+				mustNewElement(tag.FloatingPointValue, []float64{128.10}),
+				mustNewElement(tag.DimensionIndexPointer, []int{32, 36950}),
+			}},
+			expectedError: nil,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,8 +366,8 @@ func TestWrite(t *testing.T) {
 				cmpOpts = append(cmpOpts, tc.cmpOpts...)
 
 				if diff := cmp.Diff(
-					readDS.Elements,
 					wantElems,
+					readDS.Elements,
 					cmpOpts...,
 				); diff != "" {
 					t.Errorf("Reading back written dataset led to unexpected diff from source data: %s", diff)
@@ -318,4 +497,9 @@ func TestWriteFloats(t *testing.T) {
 		})
 	}
 
+}
+
+func setUndefinedLength(e *Element) *Element {
+	e.ValueLength = tag.VLUndefinedLength
+	return e
 }

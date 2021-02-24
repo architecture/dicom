@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/suyashkumar/dicom/pkg/vrraw"
+
 	"github.com/suyashkumar/dicom/pkg/uid"
 
 	"github.com/suyashkumar/dicom/pkg/dicomio"
@@ -170,7 +172,10 @@ func writeFileHeader(w dicomio.Writer, ds *Dataset, metaElems []*Element, opts w
 	if err != nil {
 		return err
 	}
-	w.WriteBytes(metaBytes.Bytes())
+	err = w.WriteBytes(metaBytes.Bytes())
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -214,7 +219,10 @@ func writeElement(w dicomio.Writer, elem *Element, opts writeOptSet) error {
 
 	if elem.Value != nil {
 		// Write the bytes to the original writer
-		w.WriteBytes(valueData.Bytes())
+		err = w.WriteBytes(valueData.Bytes())
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -235,7 +243,7 @@ func writeMetaElem(w dicomio.Writer, t tag.Tag, ds *Dataset, tagsUsed *map[tag.T
 func verifyVROrDefault(t tag.Tag, vr string) (string, error) {
 	tagInfo, err := tag.Find(t)
 	if err != nil {
-		return "UN", nil
+		return vrraw.Unknown, nil
 	}
 	if vr == "" {
 		return tagInfo.VR, nil
@@ -252,22 +260,20 @@ func verifyValueType(t tag.Tag, value Value, vr string) error {
 	valueType := value.ValueType()
 	var ok bool
 	switch vr {
-	case "US", "UL", "SL", "SS":
+	case vrraw.UnsignedShort, vrraw.UnsignedLong, vrraw.SignedLong, vrraw.SignedShort, vrraw.AttributeTag:
 		ok = valueType == Ints
-	case "SQ":
+	case vrraw.Sequence:
 		ok = valueType == Sequences
 	case "NA":
 		ok = valueType == SequenceItem
-	case "OW", "OB":
+	case vrraw.OtherWord, vrraw.OtherByte:
 		if t == tag.PixelData {
 			ok = valueType == PixelData
 		} else {
 			ok = valueType == Bytes
 		}
-	case "FL", "FD":
+	case vrraw.FloatingPointSingle, vrraw.FloatingPointDouble:
 		ok = valueType == Floats
-	case "AT":
-		fallthrough
 	default:
 		ok = valueType == Strings
 	}
@@ -295,7 +301,7 @@ func writeVRVL(w dicomio.Writer, t tag.Tag, vr string, vl uint32) error {
 		vl = tag.VLUndefinedLength
 	}
 
-	if vr == "SQ" || t == tag.Item {
+	if vr == vrraw.Sequence {
 		// We are going to write these out with undefined length always.
 		vl = tag.VLUndefinedLength
 	}
@@ -315,7 +321,10 @@ func writeVRVL(w dicomio.Writer, t tag.Tag, vr string, vl uint32) error {
 			return err
 		}
 		switch vr {
-		case "NA", "OB", "OD", "OF", "OL", "OW", "SQ", "UN", "UC", "UR", "UT":
+		case "NA", vrraw.OtherByte, vrraw.OtherDouble, vrraw.OtherFloat,
+			vrraw.OtherLong, vrraw.OtherWord, vrraw.Sequence, vrraw.Unknown,
+			vrraw.UnlimitedCharacters, vrraw.UniversalResourceIdentifier,
+			vrraw.UnlimitedText:
 			if err := w.WriteZeros(2); err != nil {
 				return err
 			}
@@ -343,7 +352,9 @@ func writeRawItem(w dicomio.Writer, data []byte) error {
 	if err := writeVRVL(w, tag.Item, "NA", length); err != nil {
 		return err
 	}
-	w.WriteBytes(data)
+	if err := w.WriteBytes(data); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -410,7 +421,10 @@ func writeStrings(w dicomio.Writer, values []string, vr string) error {
 	}
 	if len(s)%2 == 1 {
 		switch vr {
-		case "DT", "LO", "LT", "PN", "SH", "ST", "UT", "DS", "CS", "TM", "IS", "UN":
+		case vrraw.DateTime, vrraw.LongString, vrraw.LongText, vrraw.PersonName,
+			vrraw.ShortString, vrraw.ShortText, vrraw.UnlimitedText,
+			vrraw.DecimalString, vrraw.CodeString, vrraw.Time,
+			vrraw.IntegerString, vrraw.Unknown:
 			if err := w.WriteString(" "); err != nil { // http://dicom.nema.org/medical/dicom/current/output/html/part05.html#sect_6.2
 				return err
 			}
@@ -426,9 +440,9 @@ func writeStrings(w dicomio.Writer, values []string, vr string) error {
 func writeBytes(w dicomio.Writer, values []byte, vr string) error {
 	var err error
 	switch vr {
-	case "OW":
+	case vrraw.OtherWord:
 		err = writeOtherWordString(w, values)
-	case "OB":
+	case vrraw.OtherByte:
 		err = writeOtherByteString(w, values)
 	default:
 		return ErrorMismatchValueTypeAndVR
@@ -442,11 +456,12 @@ func writeBytes(w dicomio.Writer, values []byte, vr string) error {
 func writeInts(w dicomio.Writer, values []int, vr string) error {
 	for _, value := range values {
 		switch vr {
-		case "US", "SS":
+		// TODO(suyashkumar): consider additional validation of VR=AT elements.
+		case vrraw.UnsignedShort, vrraw.SignedShort, vrraw.AttributeTag:
 			if err := w.WriteUInt16(uint16(value)); err != nil {
 				return err
 			}
-		case "UL", "SL":
+		case vrraw.UnsignedLong, vrraw.SignedLong:
 			if err := w.WriteUInt32(uint32(value)); err != nil {
 				return err
 			}
@@ -464,7 +479,7 @@ func writeFloats(w dicomio.Writer, v Value, vr string) error {
 	floats := MustGetFloats(v)
 	for _, fl := range floats {
 		switch vr {
-		case "FL":
+		case vrraw.FloatingPointSingle:
 			// NOTE: this is a conversion from float64 -> float32 which may lead to a loss in precision. The assumption
 			// is that the value sitting in the float64 was originally at float32 precision if the VR is FL for this
 			// element. We will need to revisit this. Maybe we can detect if there will be a loss of precision and if so
@@ -473,7 +488,7 @@ func writeFloats(w dicomio.Writer, v Value, vr string) error {
 			if err != nil {
 				return err
 			}
-		case "FD":
+		case vrraw.FloatingPointDouble:
 			err := w.WriteFloat64(fl)
 			if err != nil {
 				return err
@@ -502,22 +517,29 @@ func writePixelData(w dicomio.Writer, t tag.Tag, value Value, vr string, vl uint
 		numFrames := len(image.Frames)
 		numPixels := len(image.Frames[0].NativeData.Data)
 		numValues := len(image.Frames[0].NativeData.Data[0])
-		length := numFrames * numPixels * numValues * image.Frames[0].NativeData.BitsPerSample / 8 // length in bytes
+		// Total required buffer length in bytes:
+		length := numFrames * numPixels * numValues * image.Frames[0].NativeData.BitsPerSample / 8
 
-		buf := new(bytes.Buffer)
+		buf := &bytes.Buffer{}
 		buf.Grow(length)
 		for frame := 0; frame < numFrames; frame++ {
 			for pixel := 0; pixel < numPixels; pixel++ {
 				for value := 0; value < numValues; value++ {
-					if image.Frames[frame].NativeData.BitsPerSample == 8 {
-						if err := binary.Write(buf, binary.LittleEndian, uint8(image.Frames[frame].NativeData.Data[pixel][value])); err != nil {
+					pixelValue := image.Frames[frame].NativeData.Data[pixel][value]
+					switch image.Frames[frame].NativeData.BitsPerSample {
+					case 8:
+						if err := binary.Write(buf, binary.LittleEndian, uint8(pixelValue)); err != nil {
 							return err
 						}
-					} else if image.Frames[frame].NativeData.BitsPerSample == 16 {
-						if err := binary.Write(buf, binary.LittleEndian, uint16(image.Frames[frame].NativeData.Data[pixel][value])); err != nil {
+					case 16:
+						if err := binary.Write(buf, binary.LittleEndian, uint16(pixelValue)); err != nil {
 							return err
 						}
-					} else {
+					case 32:
+						if err := binary.Write(buf, binary.LittleEndian, uint32(pixelValue)); err != nil {
+							return err
+						}
+					default:
 						return ErrorUnsupportedBitsPerSample
 					}
 				}

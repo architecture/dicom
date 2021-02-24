@@ -9,8 +9,9 @@ import (
 	"log"
 	"strconv"
 	"strings"
-
 	"unicode"
+
+	"github.com/suyashkumar/dicom/pkg/vrraw"
 
 	"github.com/suyashkumar/dicom/pkg/dicomio"
 	"github.com/suyashkumar/dicom/pkg/frame"
@@ -59,14 +60,20 @@ func readVL(r dicomio.Reader, isImplicit bool, t tag.Tag, vr string) (uint32, er
 	// More details here: http://dicom.nema.org/medical/dicom/current/output/html/part05.html#sect_7.1.2
 	switch vr {
 	// TODO: Parsed VR should be an enum. Will require refactors of tag pkg.
-	case "NA", "OB", "OD", "OF", "OL", "OW", "SQ", "UN", "UC", "UR", "UT":
+	case "NA", vrraw.OtherByte, vrraw.OtherDouble, vrraw.OtherFloat,
+		vrraw.OtherLong, vrraw.OtherWord, vrraw.Sequence, vrraw.Unknown,
+		vrraw.UnlimitedCharacters, vrraw.UniversalResourceIdentifier,
+		vrraw.UnlimitedText:
 		_ = r.Skip(2) // ignore two reserved bytes (0000H)
 		vl, err := r.ReadUInt32()
 		if err != nil {
 			return 0, err
 		}
 
-		if vl == tag.VLUndefinedLength && (vr == "UC" || vr == "UR" || vr == "UT") {
+		if vl == tag.VLUndefinedLength &&
+			(vr == vrraw.UnlimitedCharacters ||
+				vr == vrraw.UniversalResourceIdentifier ||
+				vr == vrraw.UnlimitedText) {
 			return 0, errors.New("UC, UR and UT may not have an Undefined Length, i.e.,a Value Length of FFFFFFFFH")
 		}
 		return vl, nil
@@ -94,7 +101,7 @@ func readValue(r dicomio.Reader, t tag.Tag, vr string, vl uint32, isImplicit boo
 		return readString(r, t, vr, vl)
 	case tag.VRDate:
 		return readDate(r, t, vr, vl)
-	case tag.VRUInt16List, tag.VRUInt32List, tag.VRInt16List, tag.VRInt32List:
+	case tag.VRUInt16List, tag.VRUInt32List, tag.VRInt16List, tag.VRInt32List, tag.VRTagList:
 		return readInt(r, t, vr, vl)
 	case tag.VRSequence:
 		return readSequence(r, t, vr, vl)
@@ -213,6 +220,9 @@ func readNativeFrames(d dicomio.Reader, parsedData *Dataset, fc chan<- *frame.Fr
 
 	// Parse the pixels:
 	image.Frames = make([]frame.Frame, nFrames)
+	bo := d.ByteOrder()
+	bytesAllocated := bitsAllocated / 8
+	pixelBuf := make([]byte, bytesAllocated)
 	for frameIdx := 0; frameIdx < nFrames; frameIdx++ {
 		// Init current frame
 		currentFrame := frame.Frame{
@@ -224,30 +234,24 @@ func readNativeFrames(d dicomio.Reader, parsedData *Dataset, fc chan<- *frame.Fr
 				Data:          make([][]int, int(pixelsPerFrame)),
 			},
 		}
+		buf := make([]int, int(pixelsPerFrame)*samplesPerPixel)
 		for pixel := 0; pixel < int(pixelsPerFrame); pixel++ {
-			currentPixel := make([]int, samplesPerPixel)
 			for value := 0; value < samplesPerPixel; value++ {
+				_, err := io.ReadFull(d, pixelBuf)
+				if err != nil {
+					return nil, bytesRead,
+						fmt.Errorf("could not read uint%d from input: %w", bitsAllocated, err)
+				}
+
 				if bitsAllocated == 8 {
-					val, err := d.ReadUInt8()
-					if err != nil {
-						return nil, bytesRead, errors.New("")
-					}
-					currentPixel[value] = int(val)
+					buf[(pixel*samplesPerPixel)+value] = int(pixelBuf[0])
 				} else if bitsAllocated == 16 {
-					val, err := d.ReadUInt16()
-					if err != nil {
-						return nil, bytesRead, errors.New("")
-					}
-					currentPixel[value] = int(val)
+					buf[(pixel*samplesPerPixel)+value] = int(bo.Uint16(pixelBuf))
 				} else if bitsAllocated == 32 {
-					val, err := d.ReadUInt32()
-					if err != nil {
-						return nil, bytesRead, errors.New("")
-					}
-					currentPixel[value] = int(val)
+					buf[(pixel*samplesPerPixel)+value] = int(bo.Uint32(pixelBuf))
 				}
 			}
-			currentFrame.NativeData.Data[pixel] = currentPixel
+			currentFrame.NativeData.Data[pixel] = buf[pixel*samplesPerPixel : (pixel+1)*samplesPerPixel]
 		}
 		image.Frames[frameIdx] = currentFrame
 		if fc != nil {
@@ -255,7 +259,7 @@ func readNativeFrames(d dicomio.Reader, parsedData *Dataset, fc chan<- *frame.Fr
 		}
 	}
 
-	bytesRead = (bitsAllocated / 8) * samplesPerPixel * pixelsPerFrame * nFrames
+	bytesRead = bytesAllocated * samplesPerPixel * pixelsPerFrame * nFrames
 
 	return &image, bytesRead, nil
 }
@@ -355,11 +359,11 @@ func readSequenceItem(r dicomio.Reader, t tag.Tag, vr string, vl uint32) (Value,
 
 func readBytes(r dicomio.Reader, t tag.Tag, vr string, vl uint32) (Value, error) {
 	// TODO: add special handling of PixelData
-	if vr == "OB" {
+	if vr == vrraw.OtherByte {
 		data := make([]byte, vl)
 		_, err := io.ReadFull(r, data)
 		return &bytesValue{value: data}, err
-	} else if vr == "OW" {
+	} else if vr == vrraw.OtherWord {
 		// OW -> stream of 16 bit words
 		if vl%2 != 0 {
 			return nil, ErrorOWRequiresEvenVL
@@ -411,7 +415,7 @@ func readFloat(r dicomio.Reader, t tag.Tag, vr string, vl uint32) (Value, error)
 	retVal := &floatsValue{value: make([]float64, 0, vl/2)}
 	for !r.IsLimitExhausted() {
 		switch vr {
-		case "FL":
+		case vrraw.FloatingPointSingle:
 			val, err := r.ReadFloat32()
 			if err != nil {
 				return nil, err
@@ -425,7 +429,7 @@ func readFloat(r dicomio.Reader, t tag.Tag, vr string, vl uint32) (Value, error)
 			}
 			retVal.value = append(retVal.value, pval)
 			break
-		case "FD":
+		case vrraw.FloatingPointDouble:
 			val, err := r.ReadFloat64()
 			if err != nil {
 				return nil, err
@@ -460,28 +464,28 @@ func readInt(r dicomio.Reader, t tag.Tag, vr string, vl uint32) (Value, error) {
 	retVal := &intsValue{value: make([]int, 0, vl/2)}
 	for !r.IsLimitExhausted() {
 		switch vr {
-		case "US":
+		case vrraw.UnsignedShort, vrraw.AttributeTag:
 			val, err := r.ReadUInt16()
 			if err != nil {
 				return nil, err
 			}
 			retVal.value = append(retVal.value, int(val))
 			break
-		case "UL":
+		case vrraw.UnsignedLong:
 			val, err := r.ReadUInt32()
 			if err != nil {
 				return nil, err
 			}
 			retVal.value = append(retVal.value, int(val))
 			break
-		case "SL":
+		case vrraw.SignedLong:
 			val, err := r.ReadInt32()
 			if err != nil {
 				return nil, err
 			}
 			retVal.value = append(retVal.value, int(val))
 			break
-		case "SS":
+		case vrraw.SignedShort:
 			val, err := r.ReadInt16()
 			if err != nil {
 				return nil, err
@@ -553,9 +557,6 @@ func readRawItem(r dicomio.Reader) ([]byte, bool, error) {
 		return nil, true, err
 	}
 
-	if err != nil {
-		return nil, true, err
-	}
 	if *t == tag.SequenceDelimitationItem {
 		if vl != 0 {
 			log.Printf("SequenceDelimitationItem's VL != 0: %d", vl)
